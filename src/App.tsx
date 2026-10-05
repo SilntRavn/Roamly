@@ -8,7 +8,6 @@ import {
   Sparkles,
   Star,
   Heart,
-  Bookmark,
   Plus,
   SlidersHorizontal,
   Send,
@@ -1549,7 +1548,7 @@ export default function App() {
                           pressed={Boolean(trip.favorite)}
                           onClick={toggleTripFavorite}
                         >
-                          <Bookmark
+                          <Heart
                             size={21}
                             fill={trip.favorite ? "currentColor" : "none"}
                           />
@@ -1894,7 +1893,7 @@ export default function App() {
                           }}
                         >
                           保存到我的行程
-                          <Bookmark size={18} />
+                          <Heart size={18} />
                         </button>
                       </footer>
                     )}

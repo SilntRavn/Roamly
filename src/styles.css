@@ -1850,6 +1850,7 @@ img {
   margin-top: 6px;
 }
 .detail-page {
+  position: relative;
   height: 100%;
   display: flex;
   flex-direction: column;
@@ -1858,13 +1859,13 @@ img {
   min-height: 0;
   flex: 1;
   overflow-y: auto;
-  padding: 28px 32px 24px;
+  padding: 22px 32px calc(128px + env(safe-area-inset-bottom));
 }
 .detail-photo {
   position: relative;
   border-radius: 27px;
   height: auto;
-  aspect-ratio: 0.813;
+  aspect-ratio: 0.85;
   overflow: hidden;
   box-shadow: var(--shadow-photo);
   background: #eef1f2;
@@ -2026,11 +2027,16 @@ img {
   margin: 18px 0;
 }
 .detail-footer {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 2;
   padding: 18px 32px 27px;
-  box-shadow: 0 -10px 20px -20px #0003;
-  background: white;
-  flex-shrink: 0;
+  background: transparent;
+  pointer-events: none;
 }
+.detail-footer button { pointer-events: auto; }
 .detail-footer .primary { min-height: 66px; font-size: 17px; padding: 18px 22px; border-radius: 22px; }
 .detail-footer .primary svg { width: 26px; height: 26px; }
 .place-info-row {
@@ -2520,7 +2526,7 @@ img {
     max-width: 740px;
   }
   .detail-scroll {
-    padding: 32px 42px 24px;
+    padding: 26px 42px calc(128px + env(safe-area-inset-bottom));
   }
   .detail-footer {
     padding: 17px 42px 25px;
@@ -2973,7 +2979,7 @@ img {
     font-size: 11px;
   }
   .detail-scroll {
-    padding: 26px 28px 20px;
+    padding: 20px 28px calc(128px + env(safe-area-inset-bottom));
   }
   .detail-photo {
     border-radius: 26px;
