@@ -33,6 +33,7 @@
   --glass-control-blur: .625rem;
   --glass-saturation: 135%;
   --radius: 22px;
+  --page-inline-padding: 36px;
 }
 * {
   box-sizing: border-box;
@@ -298,7 +299,7 @@ img {
 }
 .scroll-page {
   height: 100%;
-  padding: 36px 36px 30px;
+  padding: 36px var(--page-inline-padding) 30px;
   overflow-y: auto;
   scrollbar-width: thin;
   scrollbar-color: #ddd transparent;
@@ -2541,6 +2542,7 @@ img {
   }
 }
 @media (max-width: 759px) {
+  :root { --page-inline-padding: 28px; }
   .desktop-stage {
     padding: 0;
     display: block;
@@ -2597,7 +2599,7 @@ img {
     height: 100%;
   }
   .scroll-page {
-    padding: 30px 28px 25px;
+    padding: 30px var(--page-inline-padding) 25px;
   }
   .welcome {
     margin-bottom: 36px;
@@ -3078,9 +3080,10 @@ img {
   }
 }
 @media (max-width: 360px) {
+  :root { --page-inline-padding: 21px; }
   .scroll-page {
-    padding-left: 21px;
-    padding-right: 21px;
+    padding-left: var(--page-inline-padding);
+    padding-right: var(--page-inline-padding);
   }
   .welcome h1 {
     font-size: 1.45rem;

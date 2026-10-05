@@ -1,4 +1,4 @@
-param([switch]$Build)
+param([switch]$Build, [switch]$Restart)
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path $PSScriptRoot
 $runRoot = Join-Path $projectRoot 'deploy\run'
@@ -13,8 +13,19 @@ try {
     $pidFile = Join-Path $runRoot 'backend.pid'
     if ($listener) {
         if (!(Test-Path $pidFile) -or [int](Get-Content $pidFile) -ne $listener.OwningProcess) { throw 'Port 24173 belongs to another process; it will not be stopped.' }
-        Write-Output 'Production backend already running on 24173.'
-    } else {
+        $backendProcess = Get-CimInstance Win32_Process -Filter "ProcessId=$($listener.OwningProcess)"
+        $expectedScript = Join-Path $PSScriptRoot 'run-production.mjs'
+        if ($backendProcess.Name -ne 'node.exe' -or !$backendProcess.CommandLine.Contains($expectedScript)) { throw 'PID belongs to another process; refusing to stop it.' }
+        if ($Build -or $Restart) {
+            Stop-Process -Id $backendProcess.ProcessId
+            Wait-Process -Id $backendProcess.ProcessId -Timeout 10 -ErrorAction SilentlyContinue
+            $listener = $null
+            Write-Output 'Restarting production backend with the updated build.'
+        } else {
+            Write-Output 'Production backend already running on 24173.'
+        }
+    }
+    if (!$listener) {
         $nodePath = (Get-Command node.exe).Source
         $launchPath = Join-Path $PSScriptRoot 'run-production.mjs'
         $process = Start-Process -FilePath $nodePath -ArgumentList ('"' + $launchPath + '"') -WorkingDirectory $projectRoot -WindowStyle Hidden -PassThru -RedirectStandardOutput "$runRoot\backend.stdout.log" -RedirectStandardError "$runRoot\backend.stderr.log"

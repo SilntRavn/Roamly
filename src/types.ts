@@ -36,7 +36,12 @@ export type Place = {
   overviewSource?: ContentSource | null;
   bookingChannels?: BookingChannel[];
   aiRating?: number | null;
+  poiRating?: number | null;
+  reviewRating?: number | null;
+  reviewCount?: number;
   category: string;
+  poiType?: string;
+  poiTypecode?: string;
   photo: string;
   photos?: string[];
   suggestedMinutes: number;
@@ -136,3 +141,18 @@ export type Conversation = {
   trip_id: string | null;
   messages: Message[];
 };
+export type ExploreCategory = "scenery" | "food" | "stay" | "fun";
+export type ExploreArea = { west: number; south: number; east: number; north: number; lng: number; lat: number; zoom: number; cameraLng?: number; cameraLat?: number };
+export type ExploreSearchArea = { west: number; south: number; east: number; north: number; lng: number; lat: number; radius: number };
+export type ExploreNote = {
+  id: string; category: ExploreCategory; title: string; summary: string; tags: string[];
+  placeIds: string[]; updatedAt: string; sources: ContentSource[];
+  favoriteCount?: number;
+  sections: { heading: string; body: string; placeIds: string[]; sourceUrls: string[] }[];
+  recommendations?: { placeId: string; worthVisiting: boolean; reason: string; sourceUrls: string[] }[];
+};
+export type ExploreFeed = {
+  key: string | null; status: "loading" | "waiting" | "ready" | "empty" | "error";
+  notes: ExploreNote[]; places: Place[]; message: string; checkedAt?: string;
+};
+export type ExploreNoteCollection = { notes: ExploreNote[]; places: Place[] };

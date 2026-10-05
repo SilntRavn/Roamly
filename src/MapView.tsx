@@ -7,6 +7,7 @@ import {
   RotateCcw,
   ChevronRight,
   TrainFront, BusFront, CarFront, Footprints, Bike, Route, X,
+  Trees, Utensils, BedDouble, Gamepad2,
 } from "lucide-react";
 import { api } from "./api";
 import { isAndroidApp, nativeGeolocation } from "./native";
@@ -14,9 +15,10 @@ import { locateMap } from "./map-location.mjs";
 import { IconButton, Photo } from "./components";
 import { previewLayout } from "./map-preview.mjs";
 import { createHotspotSelection } from "./map-hotspots.mjs";
+import { layoutExploreMarkers } from "./explore-marker-layout.mjs";
 import { MotionPresence, motion } from "./motion";
 import { mapRoutes, routeStyle, pointAlong, modeNames } from "./route-symbols.mjs";
-import type { Place, Audit } from "./types";
+import type { Place, Audit, ExploreCategory, ExploreArea } from "./types";
 declare global {
   interface Window {
     AMap: any;
@@ -28,6 +30,13 @@ const routeIcons: Record<string, typeof Route> = { subway: TrainFront, bus: BusF
 const routeMode = (mode: string) => modeNames[mode as keyof typeof modeNames] || "公共交通";
 const routeLabel = (route: { mode: string; name: string }) => `查看${route.name.startsWith(routeMode(route.mode)) ? "" : routeMode(route.mode)}${route.name}`;
 const distanceText = (distance?: number) => distance == null ? "" : distance < 1000 ? `${Math.round(distance)} 米` : `${(distance / 1000).toFixed(1)} 公里`;
+const exploreIcons = { scenery: Trees, food: Utensils, stay: BedDouble, fun: Gamepad2 };
+const explorePaths = {
+  scenery: '<path d="m12 3-5 7h3l-5 7h14l-5-7h3zM12 17v4"/>',
+  food: '<path d="M4 3v5a3 3 0 0 0 6 0V3M7 3v18M20 21V3c-4 0-5 8-1 8h1"/>',
+  stay: '<path d="M3 18v3M21 18v3M3 18h18v-7H3zM5 11V4h14v7M8 8h2M14 8h2"/>',
+  fun: '<path d="M7 7h10c4 0 6 12 2 12l-4-3H9l-4 3C1 19 3 7 7 7ZM7 9v5M4.5 11.5h5M16 10h.01M18 13h.01"/>',
+};
 async function loadMap() {
   const cfg = await api<{
     key: string;
@@ -81,6 +90,10 @@ export default function MapView({
   onDeselect,
   overseas = false,
   className = "",
+  exploreCategory,
+  onAreaChange,
+  initialView,
+  autoLocate = false,
 }: {
   places?: Place[];
   audit?: Audit | null;
@@ -90,13 +103,17 @@ export default function MapView({
   onDeselect?: () => void;
   overseas?: boolean;
   className?: string;
+  exploreCategory?: ExploreCategory;
+  onAreaChange?: (area: ExploreArea) => void;
+  initialView?: { lng: number; lat: number; zoom: number };
+  autoLocate?: boolean;
 }) {
   const div = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLDivElement>(null);
   const map = useRef<any>(null);
   const overlays = useRef<any[]>([]);
   const routeOverlays = useRef<{ id: string; line: any; weight: number }[]>([]);
-  const markers = useRef<{ id: string; content: HTMLButtonElement }[]>([]);
+  const markers = useRef<{ id: string; content: HTMLButtonElement; marker: any }[]>([]);
   const preview = useRef<HTMLButtonElement>(null);
   const canvasPress = useRef<{ x: number; y: number } | null>(null);
   const callback = useRef(onSelect);
@@ -116,8 +133,8 @@ export default function MapView({
   const locationMarker = useRef<any>(null);
   useEffect(() => () => { locationRequest.current++; }, []);
   const [size, setSize] = useState({ width: 800, height: 800 });
-  const [zoom, setZoom] = useState(13);
-  const [center, setCenter] = useState({ lng: 120.145, lat: 30.25 });
+  const [zoom, setZoom] = useState(initialView?.zoom || 13);
+  const [center, setCenter] = useState({ lng: initialView?.lng || 120.145, lat: initialView?.lat || 30.25 });
   const [staticView, setStaticView] = useState({ center, zoom: 13, width: 800, height: 800 });
   const [loaded, setLoaded] = useState(false);
   const [selectedRouteId, setSelectedRouteId] = useState<string | null>(null);
@@ -126,17 +143,24 @@ export default function MapView({
   const [, refreshProjection] = useState(0);
   const [previewSize, setPreviewSize] = useState({ width: 0, height: 0 });
   const [safeArea, setSafeArea] = useState({ left: 0, right: 0, top: 0, bottom: 0, gap: 0, controls: { left: 0, top: 0, bottom: 0 } });
+  const areaRef = useRef(safeArea);
+  areaRef.current = safeArea;
   const drag = useRef<{ x: number; y: number; center: typeof center } | null>(
     null,
   );
   const points = places.filter((p) => p.location.coordSystem === "GCJ-02");
   const knownPoints = useRef(points);
   knownPoints.current = points;
+  const areaCallback = useRef(onAreaChange);
+  areaCallback.current = onAreaChange;
+  const currentCategory = useRef(exploreCategory);
+  currentCategory.current = exploreCategory;
+  const autoLocated = useRef(false);
   const pointKey = JSON.stringify(points.map((p) => [p.id, p.location.lng, p.location.lat]));
   // The parent recreates its daily audit during unrelated status refreshes.
   // Compare route contents so those renders never reset the user's camera.
   const auditKey = JSON.stringify(audit?.days || []);
-  const routes = useMemo(() => mapRoutes(audit, points), [auditKey, pointKey]);
+  const routes = useMemo(() => exploreCategory ? [] : mapRoutes(audit, points), [auditKey, pointKey, exploreCategory]);
   const selectedRoute = routes.find((route) => route.id === selectedRouteId);
   const clearRoute = useRef(() => setSelectedRouteId(null));
   const chooseRoute = (id: string) => {
@@ -179,6 +203,7 @@ export default function MapView({
     return () => window.clearTimeout(timeout);
   }, [mode, center.lng, center.lat, zoom, size.width, size.height]);
   useEffect(() => {
+    let measuredWidth = 0, measuredHeight = 0;
     const measure = () => {
       if (!div.current) return;
       const r = div.current.getBoundingClientRect();
@@ -199,7 +224,10 @@ export default function MapView({
         ? { left: controlRect.left - r.left, top: controlRect.top - r.top, bottom: controlRect.bottom - r.top }
         : { left: r.width, top: 0, bottom: 0 };
       setSafeArea({ left: margin, right: r.width - margin, top, bottom, gap: rem * 2, controls });
-      map.current?.resize();
+      if (measuredWidth !== Math.round(r.width) || measuredHeight !== Math.round(r.height)) {
+        measuredWidth = Math.round(r.width); measuredHeight = Math.round(r.height);
+        map.current?.resize();
+      }
     };
     const observer = new ResizeObserver(measure);
     if (div.current) observer.observe(div.current);
@@ -229,13 +257,13 @@ export default function MapView({
           return;
         }
         map.current = new AMap.Map(canvas.current, {
-          zoom: 13,
-          center: [120.145, 30.25],
+          zoom: initialView?.zoom || 13,
+          center: initialView ? [initialView.lng, initialView.lat] : [120.145, 30.25],
           viewMode: "2D",
           mapStyle: cfg.style || "amap://styles/whitesmoke",
           showLabel: true,
-          features: ["bg", "point", "road", "building"],
-          isHotspot: true,
+          features: exploreCategory ? ["bg", "road", "building"] : ["bg", "point", "road", "building"],
+          isHotspot: !exploreCategory,
         });
         const selection = createHotspotSelection<Place>({
           resolve: async (id, signal) => knownPoints.current.find((p) => p.id === id) ||
@@ -252,7 +280,7 @@ export default function MapView({
         hotspotSelection.current = selection;
         map.current.on("complete", () => setLoaded(true));
         map.current.on("click", () => selection.blankClick());
-        map.current.on("hotspotclick", (event: { id?: string }) => { void selection.hotspotClick(event); });
+        map.current.on("hotspotclick", (event: { id?: string }) => { if (!currentCategory.current) void selection.hotspotClick(event); });
         setMode("js");
       })
       .catch(() => {
@@ -270,7 +298,7 @@ export default function MapView({
     };
   }, [retry, overseas]);
   useEffect(() => {
-    if (!points.length) return;
+    if (!points.length || exploreCategory) return;
     const lng = points.reduce((a, p) => a + p.location.lng, 0) / points.length;
     const lat = points.reduce((a, p) => a + p.location.lat, 0) / points.length;
     setCenter({ lng, lat });
@@ -290,8 +318,13 @@ export default function MapView({
     markers.current = [];
     for (const [p, index] of points.map((p, i) => [p, i] as const)) {
       const content = document.createElement("button");
-      content.className = `map-marker ${focusId === p.id ? "selected" : ""}`;
-      content.textContent = String(index + 1);
+      content.className = `${exploreCategory ? `explore-marker explore-marker-${exploreCategory}` : "map-marker"} ${focusId === p.id ? "selected" : ""}`;
+      if (exploreCategory) {
+        content.innerHTML = `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${explorePaths[exploreCategory]}</svg>`;
+        const label = document.createElement("span");
+        label.textContent = p.name;
+        content.append(label);
+      } else content.textContent = String(index + 1);
       content.setAttribute("aria-label", p.name);
       content.onclick = (event) => {
         event.stopPropagation();
@@ -299,13 +332,13 @@ export default function MapView({
         if (hotspotSelection.current) hotspotSelection.current.select(p);
         else callback.current?.(p);
       };
-      markers.current.push({ id: p.id, content });
       const marker = new AMap.Marker({
         position: [p.location.lng, p.location.lat],
         content,
         offset: new AMap.Pixel(0, 0),
         title: p.name,
       });
+      markers.current.push({ id: p.id, content, marker });
       current.push(marker);
     }
     for (const route of routes) {
@@ -337,14 +370,35 @@ export default function MapView({
     }
     map.current.add(current);
     overlays.current = current;
-  }, [mode, pointKey, routes, retry]);
+  }, [mode, pointKey, routes, retry, exploreCategory]);
+  useEffect(() => {
+    const currentMap = map.current;
+    if (!exploreCategory || mode !== "js" || !currentMap) return;
+    const declutter = () => {
+      const layout = new Map(layoutExploreMarkers(knownPoints.current.map((place) => {
+        const pixel = currentMap.lngLatToContainer([place.location.lng, place.location.lat]);
+        return { id: place.id, name: place.name, x: pixel.getX(), y: pixel.getY() };
+      }), safeArea, focusId).map((point) => [point.id, point]));
+      for (const entry of markers.current) {
+        const point = layout.get(entry.id);
+        if (point) entry.marker.show();
+        else entry.marker.hide();
+        const label = entry.content.querySelector("span");
+        if (label) label.style.display = point?.label ? "" : "none";
+      }
+    };
+    const events = ["moveend", "zoomend", "resize", "complete"];
+    events.forEach((event) => currentMap.on(event, declutter));
+    declutter();
+    return () => events.forEach((event) => currentMap.off(event, declutter));
+  }, [mode, pointKey, exploreCategory, focusId, safeArea.left, safeArea.right, safeArea.top, safeArea.bottom, safeArea.controls.left, safeArea.controls.bottom]);
   useEffect(() => {
     routeOverlays.current.forEach(({ id, line, weight }) => line.setOptions({
       strokeWeight: id === selectedRouteId ? weight + 2 : weight, zIndex: id === selectedRouteId ? 49 : 45,
     }));
   }, [selectedRouteId, mode, routes, retry]);
   useEffect(() => {
-    if (mode === "loading" || !points.length) return;
+    if (mode === "loading" || !points.length || exploreCategory) return;
     const viewKey = JSON.stringify([mode, pointKey, auditKey, retry, restoreRevision]);
     if (fittedView.current === viewKey) return;
     if (mode === "js" && (!map.current || !overlays.current.length)) return;
@@ -469,22 +523,73 @@ export default function MapView({
       dismiss.current?.();
       setSelectedRouteId(null);
       const position = [result.lng, result.lat];
+      const locatedZoom = exploreCategory ? result.city || result.approximate ? 13 : 15 : result.city ? 11 : result.approximate ? 13 : 16;
+      const origin = project(result.lng, result.lat, locatedZoom);
+      const camera = exploreCategory ? unproject(origin.x, origin.y + size.height / 2 - (safeArea.top + safeArea.bottom) / 2, locatedZoom) : result;
       if (map.current && window.AMap) {
-        map.current.setZoomAndCenter(result.city ? 11 : result.approximate ? 13 : 16, position);
+        map.current.setZoomAndCenter(locatedZoom, [camera.lng, camera.lat]);
         locationMarker.current?.setMap(null);
         locationMarker.current = null;
         if (!result.city) {
           locationMarker.current = new window.AMap.Marker({ position, content: '<span class="current-location-dot"></span>', offset: new window.AMap.Pixel(-8, -8), zIndex: 200 });
           map.current.add(locationMarker.current);
         }
-      } else { setCenter({ lng: result.lng, lat: result.lat }); setZoom(result.city ? 11 : result.approximate ? 13 : 16); }
-      setLocationNotice(result.city ? "已定位到当前城市，暂未获得精确位置" : result.approximate ? "已显示大致位置，网络定位仅供参考" : "已定位到当前位置");
+      } else { setCenter({ lng: camera.lng, lat: camera.lat }); setZoom(locatedZoom); }
+      setLocationNotice(result.city ? "已显示网络估算的城市，非精确位置；可拖动地图选择区域" : result.approximate ? "已显示大致位置，网络定位仅供参考" : "已定位到当前位置");
     } catch (error) {
-      if (request === locationRequest.current) setError((error as Error).message);
+      if (request === locationRequest.current) {
+        if (exploreCategory) setLocationNotice((error as Error).message);
+        else setError((error as Error).message);
+      }
     } finally {
       if (request === locationRequest.current) setLocating(false);
     }
   };
+  useEffect(() => {
+    if (!autoLocate || autoLocated.current || mode === "loading") return;
+    autoLocated.current = true;
+    void locate();
+  }, [autoLocate, mode]);
+  function visibleMapCenter() {
+    const visible = areaRef.current;
+    const x = (visible.left + visible.right) / 2, y = (visible.top + visible.bottom) / 2;
+    if (map.current && window.AMap) {
+      const point = map.current.containerToLngLat(new window.AMap.Pixel(x, y));
+      return { lng: point.getLng(), lat: point.getLat() };
+    }
+    const origin = project(center.lng, center.lat, zoom);
+    return unproject(origin.x + x - size.width / 2, origin.y + y - size.height / 2, zoom);
+  }
+  useEffect(() => {
+    if (!onAreaChange || mode === "loading") return;
+    let timer = 0;
+    const emit = () => {
+      const currentMap = map.current;
+      const visible = areaRef.current;
+      // 只查询地图未被面板遮挡的区域；展开笔记不会主动更换已经读到的内容。
+      if (exploreCategory && visible.bottom - visible.top < 80) return;
+      if (mode === "js" && currentMap) {
+        const bounds = currentMap.getBounds(), position = currentMap.getCenter();
+        const sw = exploreCategory ? currentMap.containerToLngLat(new window.AMap.Pixel(visible.left, visible.bottom)) : bounds.getSouthWest();
+        const ne = exploreCategory ? currentMap.containerToLngLat(new window.AMap.Pixel(visible.right, visible.top)) : bounds.getNorthEast();
+        const target = exploreCategory ? visibleMapCenter() : { lng: position.getLng(), lat: position.getLat() };
+        areaCallback.current?.({ west: sw.getLng(), south: sw.getLat(), east: ne.getLng(), north: ne.getLat(),
+          lng: target.lng, lat: target.lat, zoom: currentMap.getZoom(), cameraLng: position.getLng(), cameraLat: position.getLat() });
+      } else {
+        const origin = project(center.lng, center.lat, zoom);
+        const sw = unproject(origin.x + (exploreCategory ? visible.left - size.width / 2 : -size.width / 2), origin.y + (exploreCategory ? visible.bottom - size.height / 2 : size.height / 2), zoom);
+        const ne = unproject(origin.x + (exploreCategory ? visible.right - size.width / 2 : size.width / 2), origin.y + (exploreCategory ? visible.top - size.height / 2 : -size.height / 2), zoom);
+        const target = exploreCategory ? visibleMapCenter() : center;
+        areaCallback.current?.({ west: sw.lng, south: sw.lat, east: ne.lng, north: ne.lat, lng: target.lng, lat: target.lat, zoom, cameraLng: center.lng, cameraLat: center.lat });
+      }
+    };
+    const schedule = () => { clearTimeout(timer); timer = window.setTimeout(emit, 650); };
+    const events = ["moveend", "zoomend", "complete", "resize"];
+    events.forEach((event) => map.current?.on(event, schedule));
+    schedule();
+    return () => { clearTimeout(timer); events.forEach((event) => map.current?.off(event, schedule)); };
+  }, [Boolean(onAreaChange), mode, center.lng, center.lat, zoom, size.width, size.height, retry]);
+  const ExploreIcon = exploreCategory ? exploreIcons[exploreCategory] : MapPin;
   const base = project(center.lng, center.lat, zoom);
   const xy = (p: number[]) => {
     if (mode === "js" && map.current) {
@@ -529,6 +634,8 @@ export default function MapView({
   });
   const legend = [...new Map(routes.map((route) => [route.mode, route])).values()];
   const SelectedIcon = routeIcons[selectedRoute?.mode || ""] || Route;
+  const staticLayout = new Map(layoutExploreMarkers(points.map((place) => ({ id: place.id, name: place.name, ...xy([place.location.lng, place.location.lat]) })), safeArea, focusId).map((point) => [point.id, point]));
+  const staticPoints = !exploreCategory ? points : points.filter((place) => staticLayout.has(place.id));
   return (
     <div ref={div} className={`map-view ${className}`}>
       {overseas && !points.length && (
@@ -614,17 +721,17 @@ export default function MapView({
               </g>;
             })}
           </svg>
-          {points.map((p, i) => {
+          {staticPoints.map((p, i) => {
             const v = xy([p.location.lng, p.location.lat]);
             return (
               <button
                 key={p.id}
-                className={`map-marker static-marker ${p.id === focusId ? "selected" : ""}`}
+                className={`${exploreCategory ? `explore-marker explore-marker-${exploreCategory}` : "map-marker"} static-marker ${p.id === focusId ? "selected" : ""}`}
                 style={{ left: v.x, top: v.y }}
                 aria-label={p.name}
                 onClick={() => { setSelectedRouteId(null); onSelect?.(p); }}
               >
-                {i + 1}
+                {exploreCategory ? <><ExploreIcon size={17} /><span style={{ display: staticLayout.get(p.id)?.label ? undefined : "none" }}>{p.name}</span></> : i + 1}
               </button>
             );
           })}
@@ -677,11 +784,11 @@ export default function MapView({
       )}
       {hotspotError && <div className="map-hotspot-status map-hotspot-error" style={{ left: safeArea.left, top: safeArea.top + 8 }} role="alert">{hotspotError}<IconButton label="关闭景点加载提示" onClick={() => setHotspotError("")}><X size={16} /></IconButton></div>}
       {!overseas && (
-        <div className="map-controls">
-          <IconButton label={locating ? "正在定位" : "定位到当前位置"} onClick={locate} disabled={locating}>
+        <div className="map-controls" style={exploreCategory ? { top: safeArea.top + 8 } : undefined}>
+          <IconButton label={locating ? "正在定位" : "定位到当前位置"} onClick={locate} disabled={locating || mode === "loading"}>
             {locating ? <LoaderCircle size={20} className="spin" /> : <LocateFixed size={20} />}
           </IconButton>
-          {points.length > 0 && (
+          {points.length > 0 && !exploreCategory && (
             <IconButton label="复原地图视野" onClick={() => {
               hotspotSelection.current?.dismiss();
               dismiss.current?.();

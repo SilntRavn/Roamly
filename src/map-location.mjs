@@ -11,10 +11,10 @@ function coordinates(lng, lat) {
   return { lng, lat };
 }
 export async function locateMap({ geolocation, AMap, convert, secure = true, timeout = 10000 }) {
-  if (!secure) throw new Error("定位需要 HTTPS 或 localhost，请通过安全地址打开");
   let browserError;
   let position;
-  if (geolocation) {
+  // HTTP 普通网页不调用受浏览器限制的GPS接口；Android原生桥仍由调用方标为secure。
+  if (secure && geolocation) {
     try {
       position = await bounded((done) => geolocation.getCurrentPosition(
         (value) => done(null, value), (error) => done(error),
@@ -30,7 +30,7 @@ export async function locateMap({ geolocation, AMap, convert, secure = true, tim
     const location = await convert(gps);
     return { ...coordinates(location.lng, location.lat), approximate: position.coords.accuracy > 1000, city: false };
   }
-  if (!AMap?.plugin) throw new Error(browserError?.code === 3 ? "定位超时，请检查系统定位服务后重试" : "浏览器未能获取位置，请检查系统定位服务或网络连接");
+  if (!AMap?.plugin) throw new Error(!secure ? "网络定位暂不可用，可拖动地图选择区域；精确定位需 HTTPS 或本机 localhost 地址" : browserError?.code === 3 ? "定位超时，请检查系统定位服务后重试" : "浏览器未能获取位置，请检查系统定位服务或网络连接");
   await bounded((done) => AMap.plugin("AMap.Geolocation", () => done(null, true)), timeout, "定位组件加载超时，请检查网络后重试");
   const locator = new AMap.Geolocation({
     enableHighAccuracy: true, timeout, maximumAge: 60000, convert: true,
@@ -38,7 +38,13 @@ export async function locateMap({ geolocation, AMap, convert, secure = true, tim
     showButton: false, showMarker: false, showCircle: false, panToLocation: false, zoomToAccuracy: false,
   });
   let result;
-  try { result = await bounded((done) => locator.getCurrentPosition((status, value) => {
+  if (!secure) {
+    if (!locator.getCityInfo) throw new Error("网络定位暂不可用，请拖动地图选择探索区域");
+    result = await bounded((done) => locator.getCityInfo((status, value) => {
+      if (status !== "complete") done(new Error("网络城市定位未成功，请拖动地图选择区域或稍后重试"));
+      else done(null, { ...value, location_type: "ipcity", isConverted: true });
+    }), timeout, "网络城市定位超时，请稍后重试");
+  } else try { result = await bounded((done) => locator.getCurrentPosition((status, value) => {
     if (status !== "complete") done(new Error("浏览器与网络定位均未成功，请检查系统定位服务和网络后重试"));
     else done(null, value);
   }), timeout + 1000, "网络定位超时，请稍后重试"); }

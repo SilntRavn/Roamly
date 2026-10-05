@@ -28,8 +28,13 @@ CREATE TABLE IF NOT EXISTS shares(token TEXT PRIMARY KEY, user_id TEXT REFERENCE
 CREATE TABLE IF NOT EXISTS route_cache(cache_key TEXT PRIMARY KEY, payload TEXT NOT NULL, expires INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS search_cache(cache_key TEXT PRIMARY KEY, payload TEXT NOT NULL, expires INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS place_content_cache(place_id TEXT PRIMARY KEY, payload TEXT NOT NULL, expires INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS explore_notes(id TEXT PRIMARY KEY, category TEXT NOT NULL, payload TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS note_favorites(user_id TEXT REFERENCES users(id), note_id TEXT REFERENCES explore_notes(id), saved_at TEXT NOT NULL, PRIMARY KEY(user_id,note_id));
+CREATE TABLE IF NOT EXISTS explore_feeds(cache_key TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS trip_audits(trip_id TEXT PRIMARY KEY, payload TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_trips_user ON trips(user_id);
+CREATE INDEX IF NOT EXISTS idx_explore_notes_category ON explore_notes(category,updated_at);
+CREATE INDEX IF NOT EXISTS idx_note_favorites_note ON note_favorites(note_id);
 CREATE INDEX IF NOT EXISTS idx_review_place ON reviews(place_id);`);
 // Upgrade existing databases without losing guest trips or registered accounts.
 const tripColumns = new Set(db.prepare("PRAGMA table_info(trips)").all().map((c) => c.name));

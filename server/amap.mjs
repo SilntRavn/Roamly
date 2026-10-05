@@ -11,6 +11,8 @@ import { chooseTransitPath } from "./transit-choice.mjs";
 const value = (x) => (typeof x === "string" && x ? x : null);
 export function normalizePoi(p) {
   const [lng, lat] = p.location.split(",").map(Number);
+  const rawRating = p.business?.rating ?? p.biz_ext?.rating;
+  const rating = typeof rawRating === "string" || typeof rawRating === "number" ? Number(rawRating) : NaN;
   const photos = [...new Set((Array.isArray(p.photos) ? p.photos : [])
     .map((photo) => typeof photo.url === "string" ? photo.url.replace(/^http:/, "https:") : "")
     .filter((url) => /^https:\/\//.test(url) && PlaceSchema.shape.photo.safeParse(url).success))].slice(0, 3);
@@ -24,7 +26,10 @@ export function normalizePoi(p) {
     address: value(p.address) || "",
     location: { lng, lat, coordSystem: "GCJ-02" },
     overview: "",
+    poiRating: Number.isFinite(rating) && rating >= 1 && rating <= 5 ? rating : null,
     category: value(p.type)?.split(";").at(-1) || "景点",
+    ...(value(p.type) ? { poiType: p.type } : {}),
+    ...(value(p.typecode) ? { poiTypecode: p.typecode } : {}),
     photo: photos[0] || "",
     photos,
     suggestedMinutes: 90,
@@ -51,6 +56,7 @@ export function savePoi(place) {
     overviewSource: previous?.overviewSource || place.overviewSource,
     bookingChannels: previous?.bookingChannels || place.bookingChannels,
     aiRating: previous?.aiRating ?? place.aiRating,
+    poiRating: place.poiRating ?? previous?.poiRating ?? null,
   }, 24 * 3600 * 1000);
 }
 const pendingPlaces = new Map();

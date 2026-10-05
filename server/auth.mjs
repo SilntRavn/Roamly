@@ -62,6 +62,8 @@ export function loginAccount(req, res) {
         db.prepare(`UPDATE ${table} SET user_id=? WHERE user_id=?`).run(user.id, guest.id);
       db.prepare("INSERT OR IGNORE INTO favorites SELECT ?,place_id FROM favorites WHERE user_id=?").run(user.id, guest.id);
       db.prepare("DELETE FROM favorites WHERE user_id=?").run(guest.id);
+      db.prepare("INSERT OR IGNORE INTO note_favorites SELECT ?,note_id,saved_at FROM note_favorites WHERE user_id=?").run(user.id, guest.id);
+      db.prepare("DELETE FROM note_favorites WHERE user_id=?").run(guest.id);
       db.prepare("DELETE FROM sessions WHERE user_id=?").run(guest.id);
       db.prepare("DELETE FROM users WHERE id=?").run(guest.id);
       db.exec("COMMIT");
@@ -85,7 +87,7 @@ export function deleteAccount(req, res) {
       db.prepare("DELETE FROM ai_traces WHERE user_id=?").run(req.userId);
     }
     db.prepare("DELETE FROM trip_audits WHERE trip_id IN (SELECT id FROM trips WHERE user_id=?)").run(req.userId);
-    for (const table of ["sessions", "conversations", "shares", "favorites", "trips"])
+    for (const table of ["sessions", "conversations", "shares", "favorites", "note_favorites", "trips"])
       db.prepare(`DELETE FROM ${table} WHERE user_id=?`).run(req.userId);
     // Keep a tombstone ID so old reviews never belong to a new owner of the username.
     db.prepare("UPDATE users SET username=NULL,username_key=NULL,password=NULL,nickname='用户已注销',preferences='{}',deleted_at=? WHERE id=?")

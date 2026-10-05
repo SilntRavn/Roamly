@@ -2,10 +2,24 @@ import { amap, ServiceError } from "./amap-client.mjs";
 import { db } from "./db.mjs";
 import { normalizePoi, savePoi } from "./amap.mjs";
 import { poiBounds, poiGroups } from "../shared/map-pois.mjs";
+import { exploreCategories, matchesExploreCategory, insideExploreBounds } from "../shared/explore.mjs";
+import { setTimeout } from "node:timers/promises";
+
+async function nearbyPlaces(params) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try { return await amap("/v3/place/around", params); }
+    catch (error) {
+      if (!["TypeError", "TimeoutError"].includes(error.name)) throw error;
+      console.warn("Nearby POI network failure", { attempt: attempt + 1, name: error.name, code: error.cause?.code });
+      if (attempt) throw new ServiceError("附近地点查询暂时无法连接，请稍后重试");
+      await setTimeout(250);
+    }
+  }
+}
 
 const pending = new Map();
 async function groupPlaces(bounds, types, section = 0, divisions = 1) {
-  const key = JSON.stringify(["roamly-poi-v3", bounds, types, section, divisions]);
+  const key = JSON.stringify(["roamly-poi-v4", bounds, types, section, divisions]);
   const cached = db.prepare("SELECT payload FROM search_cache WHERE cache_key=? AND expires>?").get(key, Date.now());
   if (cached) return JSON.parse(cached.payload);
   if (pending.has(key)) return pending.get(key);
@@ -21,7 +35,7 @@ async function groupPlaces(bounds, types, section = 0, divisions = 1) {
     for (let page = 1; page <= 1; page++) {
       // Weight sorting represents the whole viewport instead of filling every
       // sample with minor facilities around its center. Offscreen POIs are culled.
-      const data = await amap("/v3/place/around", { location: `${lng.toFixed(6)},${lat.toFixed(6)}`, radius: String(radius), sortrule: "weight", types, offset: "25", page: String(page), extensions: "all" });
+      const data = await nearbyPlaces({ location: `${lng.toFixed(6)},${lat.toFixed(6)}`, radius: String(radius), sortrule: "weight", types, offset: "25", page: String(page), extensions: "all" });
       const pois = data.pois || [];
       for (const poi of pois) {
         if (!poi.location || /停车场|出入口|售票处|公共厕所/.test(poi.type || "")) continue;
@@ -38,10 +52,16 @@ async function groupPlaces(bounds, types, section = 0, divisions = 1) {
   try { return await request; } finally { pending.delete(key); }
 }
 
-export async function mapPlaces(bounds) {
+export async function mapPlaces(bounds, category) {
   let snapped;
   try { snapped = poiBounds(bounds); }
   catch { throw new ServiceError("地图查询范围不正确，请放大地图后重试", 400); }
+  if (category) {
+    if (!Object.hasOwn(exploreCategories, category)) throw new ServiceError("不支持的探索分类", 400);
+    const groups = await Promise.all([0, 1, 2].map((section) => groupPlaces(snapped, exploreCategories[category].types, section, 3)));
+    return [...new Map(groups.flat().filter((place) => insideExploreBounds(place, bounds) &&
+      matchesExploreCategory(category, place.poiType || place.category, place.name)).map((place) => [place.id, place])).values()];
+  }
   // Spread scenic samples across the viewport; one central result page otherwise
   // concentrates markers in dense neighborhoods and misses its outer thirds.
   const groups = await Promise.all([

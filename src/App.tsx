@@ -36,6 +36,7 @@ import {
   Ticket,
 } from "lucide-react";
 import MapView from "./MapView";
+import ExplorePage, { ExploreNoteCard } from "./ExplorePage";
 import GlassSelect from "./GlassSelect";
 import GlassTimePicker from "./GlassTimePicker";
 import { PhotoGallery, BookingChannels, ContentNotice } from "./PlaceDetails";
@@ -69,6 +70,8 @@ import type {
   Conversation,
   PlaceContentStatus,
   PlaceContentMetadata,
+  ExploreNote,
+  ExploreNoteCollection,
 } from "./types";
 type ModalState = {
   type:
@@ -125,6 +128,14 @@ export default function App() {
   const [featured, setFeatured] = useState<Place[]>([]);
   const [places, setPlaces] = useState<Record<string, Place>>({});
   const [favorites, setFavorites] = useState<string[]>([]);
+  const [favoriteNotes, setFavoriteNotes] = useState<ExploreNote[]>([]);
+  const [pendingNoteIds, setPendingNoteIds] = useState<string[]>([]);
+  const noteFavoriteRequests = useRef(new Set<string>());
+  const noteFavoriteRevision = useRef(0);
+  const noteOrigin = useRef("/explore");
+  const itineraryOrigin = useRef("/trips");
+  const accountId = useRef(user?.id);
+  accountId.current = user?.id;
   const [demo, setDemo] = useState<TripBundle | null>(null);
   const [trip, setTrip] = useState<Trip | null>(null);
   const [trips, setTrips] = useState<Trip[]>([]);
@@ -208,13 +219,17 @@ export default function App() {
   };
   const navigate = (target: string) => {
     if (target === decodeURI(window.location.pathname)) return;
+    if (target.startsWith("/itinerary/") && !path.startsWith("/destination/"))
+      itineraryOrigin.current = path === "/me/footprints" ? path : "/trips";
     if (scroll.current) pageScroll.current[path] = scroll.current.scrollTop;
     if (timeline.current)
       dayScroll.current[`${trip?.id}:${day}`] = timeline.current.scrollTop;
     window.history.pushState({ roamlyIndex: ++navigationIndex.current }, "", target);
     const primary = ["/home", "/explore", "/trips", "/me"].includes(target);
     const backward = path.startsWith("/destination/") ||
-      (path.startsWith("/itinerary/") && primary);
+      (path.startsWith("/itinerary/") && (primary || target === "/me/footprints")) ||
+      (path.startsWith("/explore/notes/") && primary) ||
+      (path === "/me/footprints" && target === "/me");
     changePage(() => {
       setPath(target);
       setLoadError("");
@@ -241,7 +256,7 @@ export default function App() {
   }, [toast]);
   useEffect(() => setDeleteMode(false), [path]);
   useEffect(() => {
-    if (!deleteMode || deleteTarget || path !== "/trips") return;
+    if (!deleteMode || deleteTarget || !["/trips", "/me/footprints"].includes(path)) return;
     const cancelOnBlank = (event: MouseEvent) => {
       const target = event.target;
       if (!(target instanceof Element)) return;
@@ -259,6 +274,38 @@ export default function App() {
     setTrips(t);
     setConversations(c);
     return t;
+  };
+  const reloadFavoriteNotes = async () => {
+    const revision = noteFavoriteRevision.current;
+    const owner = accountId.current;
+    const collection = await api<ExploreNoteCollection>("/explore/favorites");
+    if (revision !== noteFavoriteRevision.current || owner !== accountId.current) return;
+    setFavoriteNotes(collection.notes);
+    addPlaces(collection.places);
+  };
+  const favoriteNote = async (note: ExploreNote) => {
+    if (noteFavoriteRequests.current.has(note.id)) return;
+    const owner = user?.id;
+    const next = !favoriteNotes.some((saved) => saved.id === note.id);
+    noteFavoriteRequests.current.add(note.id);
+    noteFavoriteRevision.current++;
+    setPendingNoteIds([...noteFavoriteRequests.current]);
+    try {
+      await api(`/explore/favorites/${encodeURIComponent(note.id)}`, { method: next ? "PUT" : "DELETE" });
+      if (accountId.current !== owner) return;
+      setFavoriteNotes((old) => next ? [note, ...old.filter((saved) => saved.id !== note.id)] : old.filter((saved) => saved.id !== note.id));
+      notify(next ? "笔记已收藏" : "已取消笔记收藏");
+    } catch (e) {
+      if (accountId.current === owner) notify((e as Error).message);
+    } finally {
+      noteFavoriteRevision.current++;
+      noteFavoriteRequests.current.delete(note.id);
+      setPendingNoteIds([...noteFavoriteRequests.current]);
+    }
+  };
+  const openNote = (id: string) => {
+    noteOrigin.current = path;
+    navigate(`/explore/notes/${encodeURIComponent(id)}`);
   };
   const requestDelete = (target: DeleteTarget) => {
     setDeleteError("");
@@ -321,13 +368,15 @@ export default function App() {
         user: User;
         featured: Place[];
         favorites: string[];
+        favoriteNotes: ExploreNoteCollection;
         demo: TripBundle;
       }>("/bootstrap");
       setUser(b.user);
       setFeatured(b.featured);
       setFavorites(b.favorites);
+      setFavoriteNotes(b.favoriteNotes?.notes || []);
       setDemo(b.demo);
-      addPlaces([...b.featured, ...b.demo.places]);
+      addPlaces([...b.featured, ...b.demo.places, ...(b.favoriteNotes?.places || [])]);
     } catch (e) {
       setLoadError((e as Error).message);
     } finally {
@@ -358,8 +407,8 @@ export default function App() {
     let active = true;
     const load = async () => {
       try {
-        if (path === "/trips") {
-          await reloadTrips();
+        if (path === "/trips" || path === "/me/footprints") {
+          await Promise.all([reloadTrips(), reloadFavoriteNotes()]);
         } else if (path === "/me") {
           await loadProfile();
         } else if (path.startsWith("/itinerary/")) {
@@ -422,21 +471,24 @@ export default function App() {
     };
   }, [path, user?.id, demo]);
   useEffect(() => {
-    if (!user?.username || busy || working || deleting || modal || deleteTarget) return;
+    if (!user?.username || busy || working || deleting || modal || deleteTarget || pendingNoteIds.length) return;
     let active = true;
     const stop = startAccountSync({
       window,
       document,
       refresh: async (signal: AbortSignal) => {
         const snapshot = syncState.current;
+        const noteRevision = noteFavoriteRevision.current;
         const valid = () => active && !signal.aborted && snapshot.trip === syncState.current.trip &&
+          noteRevision === noteFavoriteRevision.current &&
           snapshot.conversationId === syncState.current.conversationId && !syncState.current.busy &&
           !syncState.current.working && !syncState.current.deleting && !syncState.current.modal && !syncState.current.deleteTarget;
-        const [saved, drafts, profile, favoriteIds] = await Promise.all([
+        const [saved, drafts, profile, favoriteIds, savedNotes] = await Promise.all([
           api<Trip[]>("/trips", { signal, cache: "no-store" }),
           api<Conversation[]>("/conversations", { signal, cache: "no-store" }),
           api<{ user: User; stats: typeof stats }>("/profile", { signal, cache: "no-store" }),
           api<Place[]>("/favorites", { signal, cache: "no-store" }),
+          api<ExploreNoteCollection>("/explore/favorites", { signal, cache: "no-store" }),
         ]);
         if (!valid() || profile.user.id !== user.id) return;
         // Shared snapshots and the design demo are not account-owned routes.
@@ -458,7 +510,8 @@ export default function App() {
         setStats(profile.stats);
         setFavorites(favoriteIds.map((p) => p.id));
         setFavoritePlaces(favoriteIds);
-        addPlaces(favoriteIds);
+        setFavoriteNotes(savedNotes.notes);
+        addPlaces([...favoriteIds, ...savedNotes.places]);
         if (snapshot.conversationId) {
           const conversation = drafts.find((c) => c.id === snapshot.conversationId);
           if (conversation) setMessages(conversation.messages);
@@ -485,7 +538,7 @@ export default function App() {
       },
     });
     return () => { active = false; stop(); };
-  }, [user?.id, user?.username, path, busy, working, deleting, modal, deleteTarget]);
+  }, [user?.id, user?.username, path, busy, working, deleting, modal, deleteTarget, pendingNoteIds.length]);
   const detailId = detail?.place.id;
   useEffect(() => {
     if (!detailId || !path.startsWith("/destination/") || decodeURIComponent(path.split("/")[2]) !== detailId) return;
@@ -538,6 +591,48 @@ export default function App() {
     } catch (e) {
       notify((e as Error).message);
     }
+  };
+  const chooseTripForPlace = async (place: Place) => {
+    if (busy || working) { notify("请先等待当前规划完成"); return; }
+    addPlaces([place]);
+    try {
+      await reloadTrips();
+      setModal({ type: "choose", place });
+    } catch (e) { notify((e as Error).message); }
+  };
+  const enterTripChat = async (savedTrip: Trip, place?: Place) => {
+    const conversation = await post<Conversation>(`/trips/${savedTrip.id}/conversation`, { placeId: place?.id });
+    setTrip(savedTrip);
+    setConversationId(conversation.id);
+    setMessages(conversation.messages);
+    setChatInput("");
+    setChatError("");
+    chatNearBottom.current = true;
+    navigate(`/ai/chat/${conversation.id}`);
+  };
+  const addPlaceToSavedTrip = async (target: Trip, place: Place) => {
+    setWorking(true);
+    try {
+      const bundle = await api<TripBundle>(`/trips/${target.id}`);
+      const alreadyAdded = bundle.trip.days.some((d) => d.items.some((item) => item.placeId === place.id));
+      let updated = bundle;
+      if (!alreadyAdded) {
+        const preferred = bundle.trip.days.find((d) => d.index === (target.id === trip?.id ? day : 1));
+        const targetDay = preferred && preferred.items.length < 12 ? preferred : bundle.trip.days.find((d) => d.items.length < 12);
+        if (!targetDay) throw new Error("这个行程的每天都已排满，请先与 AI 调整或新建行程");
+        updated = await patch<TripBundle>(`/trips/${target.id}`, {
+          ...bundle.trip, days: bundle.trip.days.map((d) => d.index !== targetDay.index ? d : { ...d, items: [...d.items, {
+            id: newId(), kind: "place", placeId: place.id, title: place.name,
+            arrival: nextTime(d.items), durationMinutes: place.suggestedMinutes, notes: "",
+          }] }),
+        });
+      }
+      useBundle(updated);
+      setModal(null);
+      await enterTripChat(updated.trip, place);
+      notify(alreadyAdded ? "这个地点已在行程中，可以继续与 AI 安排" : "已加入行程，可以继续与 AI 安排");
+    } catch (e) { notify((e as Error).message); }
+    finally { setWorking(false); }
   };
   const showFavorites = async () => {
     setModal({ type: "favorites" });
@@ -819,9 +914,9 @@ export default function App() {
         })),
       });
       useBundle(b);
-      navigate(`/itinerary/${b.trip.id}`);
       setModal(null);
-      notify("新行程已准备好，添加你想去的地方");
+      await enterTripChat(b.trip, place);
+      notify("新行程已准备好，和 AI 一起安排吧");
     } catch (e) {
       notify((e as Error).message);
     } finally {
@@ -830,13 +925,17 @@ export default function App() {
   };
   const isDetail = path.startsWith("/destination/");
   const isChat = path.startsWith("/ai/chat/");
+  const isExploreNote = path.startsWith("/explore/notes/");
+  const isFootprints = path === "/me/footprints";
+  const visibleTrips = trips.filter((t) => isFootprints ? t.footprintVisible ?? t.status === "completed" : filter === "favorite" ? t.favorite : t.savedVisible !== false);
+  const favoriteNoteIds = favoriteNotes.map((note) => note.id);
   const isItinerary =
     path.startsWith("/itinerary/") || path.startsWith("/share/");
   const isShared = path.startsWith("/share/");
-  const activeNav = isItinerary ? "/trips" : path;
+  const activeNav = isItinerary ? "/trips" : path.startsWith("/explore") ? "/explore" : path.startsWith("/me") ? "/me" : path;
   const currentDay = trip?.days.find((d) => d.index === day) || trip?.days[0];
   useContentMotion(timeline, `${trip?.id}:${currentDay?.index}`, ".timeline-content");
-  useContentMotion(scroll, `${path}:${filter}:${featured.length}:${trips.map((t) => t.id).join(',')}`, ".destination-card, .saved-trip-card, .draft-card");
+  useContentMotion(scroll, `${path}:${filter}:${featured.length}:${trips.map((t) => t.id).join(',')}:${favoriteNoteIds.join(',')}`, ".destination-card, .saved-trip-card, .draft-card, .explore-note-card");
   const dayPlaces =
     currentDay?.items
       .filter((i) => i.placeId)
@@ -852,11 +951,11 @@ export default function App() {
   ];
   const dayAudit =
     dailyAudit && audit ? { ...audit, days: [dailyAudit] } : null;
-  const backFromPlan = () => navigate(isShared ? "/home" : "/trips");
+  const backFromPlan = () => navigate(isShared ? "/home" : itineraryOrigin.current);
   return (
     <div className="desktop-stage">
       <div
-        className={`app-shell ${isDetail || isChat || isItinerary ? "immersive" : ""}`}
+        className={`app-shell ${isDetail || isChat || isItinerary || isExploreNote || isFootprints ? "immersive" : ""}`}
       >
         <nav className="navigation" aria-label="主导航">
           <a
@@ -997,48 +1096,12 @@ export default function App() {
                   </button>
                 </div>
               )}
-              {path === "/explore" && (
-                <div className="explore-page">
-                  <MapView
-                    places={trip ? dayPlaces : []}
-                    audit={dayAudit}
-                    onSelect={selectMapPlace}
-                    focusId={focused}
-                    onOpenPlace={openPlace}
-                    onDeselect={() => setFocused(null)}
-                  />
-                  <div className="explore-welcome" data-map-obstacle="top">
-                    <div>
-                      <p>嗨，{user?.nickname} 👋</p>
-                      <h1>下一站，去哪里？</h1>
-                    </div>
-                    <button
-                      className="avatar"
-                      onClick={() => navigate("/me")}
-                      aria-label="我的"
-                    >
-                      <img src="/images/default-avatar.png" alt="" />
-                    </button>
-                  </div>
-                  <div className="explore-planner" data-map-obstacle="bottom">
-                    <PlannerInput
-                      value={request}
-                      onChange={setRequest}
-                      onSubmit={() => generate(request)}
-                    />
-                    <button
-                      className="secondary full"
-                      onClick={() => setModal({ type: "add" })}
-                    >
-                      <Plus size={18} />
-                      搜索想去的景点
-                    </button>
-                  </div>
-                </div>
-              )}
-              {path === "/trips" && (
-                <div className={`scroll-page trips-page ${deleteTarget ? "delete-confirm-open" : ""}`} ref={scroll}>
-                  <div className="section-heading top-heading">
+              {path.startsWith("/explore") && <ExplorePage path={path} onOpenNote={openNote} onBackFromNote={() => navigate(noteOrigin.current)}
+                favoriteNoteIds={favoriteNoteIds} pendingNoteIds={pendingNoteIds} onFavoriteNote={favoriteNote}
+                onOpenPlace={openPlace} onAddPlace={chooseTripForPlace} onPlaces={addPlaces} />}
+              {(path === "/trips" || isFootprints) && (
+                <div className={`scroll-page trips-page ${isFootprints ? "footprints-page" : ""} ${deleteTarget ? "delete-confirm-open" : ""}`} ref={scroll}>
+                  {isFootprints ? <Back title="旅行足迹" onClick={() => navigate("/me")} actions={<IconButton label={deleteMode ? "完成删除" : "移除旅行足迹"} className="trip-delete-toggle" pressed={deleteMode} onClick={() => setDeleteMode((current) => !current)}><Trash2 size={21} /></IconButton>} /> : <div className="section-heading top-heading">
                     <h1>我的行程</h1>
                     <div className="inline-actions">
                       <IconButton
@@ -1047,7 +1110,7 @@ export default function App() {
                       >
                         <Download size={21} />
                       </IconButton>
-                      {filter !== "favorite" && <IconButton
+                      {filter === "saved" && <IconButton
                         className="trip-delete-toggle"
                         label={deleteMode ? "完成删除" : "删除行程"}
                         pressed={deleteMode}
@@ -1063,12 +1126,12 @@ export default function App() {
                         <Plus size={23} />
                       </IconButton>
                     </div>
-                  </div>
-                  <MotionTabs className="segmented" value={filter} aria-label="行程筛选">
+                  </div>}
+                  {!isFootprints && <MotionTabs className="segmented" value={filter} aria-label="行程筛选">
                     {[
                       ["saved", "全部行程"],
                       ["favorite", "已收藏"],
-                      ["completed", "旅行足迹"],
+                      ["notes", "收藏笔记"],
                     ].map(([key, label]) => (
                       <button
                         key={key}
@@ -1083,16 +1146,12 @@ export default function App() {
                         {label}
                       </button>
                     ))}
-                  </MotionTabs>
-                  <div className="trip-grid">
-                    {trips
-                      .filter((t) =>
-                        filter === "favorite"
-                          ? t.favorite
-                          : filter === "completed"
-                            ? t.footprintVisible ?? t.status === "completed"
-                            : t.savedVisible !== false,
-                      )
+                  </MotionTabs>}
+                  {filter === "notes" && !isFootprints ? <>
+                    <div className="explore-note-grid saved-notes-grid">{favoriteNotes.map((note) => <ExploreNoteCard key={note.id} note={note} places={Object.values(places)} favorite pending={pendingNoteIds.includes(note.id)} onOpen={() => openNote(note.id)} onFavorite={() => favoriteNote(note)} />)}</div>
+                    {!favoriteNotes.length && <Empty icon={<Heart size={32} />} action={<button className="primary" onClick={() => navigate("/explore")}>去探索笔记</button>}>收藏喜欢的笔记，留给下一段旅程</Empty>}
+                  </> : <><div className="trip-grid">
+                    {visibleTrips
                       .map((t) => {
                         const cover = t.days
                           .flatMap((d) => d.items)
@@ -1100,7 +1159,7 @@ export default function App() {
                         const p =
                           t.cover || (cover ? places[cover.placeId!] : null);
                         return (
-                          <article key={t.id} className={`saved-trip-card ${deleteMode && filter !== "favorite" ? "is-delete-mode" : ""}`}>
+                          <article key={t.id} className={`saved-trip-card ${deleteMode && (isFootprints || filter === "saved") ? "is-delete-mode" : ""}`}>
                             <button
                               className="saved-trip-main"
                               onClick={() => {
@@ -1117,11 +1176,11 @@ export default function App() {
                                 </p>
                               </div>
                             </button>
-                            {deleteMode && filter !== "favorite" && <IconButton
+                            {deleteMode && (isFootprints || filter === "saved") && <IconButton
                               className="delete-button trip-delete-button"
                               label={`删除行程：${t.title}`}
                               disabled={busy && trip?.id === t.id}
-                              onClick={() => requestDelete({ kind: "trip", id: t.id, title: t.title, scope: filter === "completed" ? "footprint" : "saved" })}
+                              onClick={() => requestDelete({ kind: "trip", id: t.id, title: t.title, scope: isFootprints ? "footprint" : "saved" })}
                             >
                               <Trash2 size={19} />
                             </IconButton>}
@@ -1149,13 +1208,7 @@ export default function App() {
                         );
                       })}
                   </div>
-                  {!trips.filter((t) =>
-                    filter === "favorite"
-                      ? t.favorite
-                      : filter === "completed"
-                        ? t.footprintVisible ?? t.status === "completed"
-                        : t.savedVisible !== false,
-                  ).length && (
+                  {!visibleTrips.length && (
                     <Empty
                       icon={<Compass size={32} />}
                       action={
@@ -1167,14 +1220,12 @@ export default function App() {
                         </button>
                       }
                     >
-                      {filter === "favorite"
+                      {isFootprints ? "走过的风景，会慢慢积累" : filter === "favorite"
                         ? "喜欢的路线，留在这里"
-                        : filter === "completed"
-                          ? "走过的风景，会慢慢积累"
-                          : "下一段旅程，从一个想法开始"}
+                        : "下一段旅程，从一个想法开始"}
                     </Empty>
-                  )}
-                  {filter !== "favorite" && <><div className="section-heading">
+                  )}</>}
+                  {!isFootprints && filter === "saved" && <><div className="section-heading">
                     <h2>灵感草稿</h2>
                     <button onClick={() => navigate("/home")}>新灵感</button>
                   </div>
@@ -1215,13 +1266,13 @@ export default function App() {
                   {!conversations.filter((c) => !c.trip_id).length && (
                     <p className="quiet-note">还没想好去哪儿，也可以先聊聊。</p>
                   )}</>}
-                  <button
+                  {!isFootprints && filter === "saved" && <button
                     className="demo-link"
                     onClick={() => navigate("/itinerary/demo")}
                   >
                     查看设计示例行程
                     <ChevronRight size={16} />
-                  </button>
+                  </button>}
                 </div>
               )}
               {path === "/me" && (
@@ -1285,6 +1336,12 @@ export default function App() {
                       label="我的收藏"
                       value={`${stats.favorites} 个地点`}
                       onClick={showFavorites}
+                    />
+                    <Row
+                      icon={<Footprints size={21} />}
+                      label="旅行足迹"
+                      value={`${stats.visited} 个地点`}
+                      onClick={() => navigate("/me/footprints")}
                     />
                     <Row
                       icon={<SlidersHorizontal size={21} />}
@@ -2048,10 +2105,7 @@ export default function App() {
                   <footer className="detail-footer">
                     <button
                       className="primary full"
-                      onClick={async () => {
-                        await reloadTrips();
-                        setModal({ type: "choose", place: detail.place });
-                      }}
+                      onClick={() => chooseTripForPlace(detail.place)}
                     >
                       加入我的行程
                       <Send size={26} strokeWidth={1.7} />
@@ -2228,25 +2282,24 @@ export default function App() {
       )}
       {modal?.type === "choose" && modal.place && (
         <Modal title="加入哪一段旅程？" onClose={() => setModal(null)}>
+          <p className="modal-description">选择行程即可加入，随后直接与 AI 旅伴一起安排。</p>
           <div className="choose-trips">
-            {trips.map((t) => (
+            {[...trips].sort((a, b) => Number(b.id === trip?.id) - Number(a.id === trip?.id)).map((t) => (
               <button
                 key={t.id}
                 className="draft-card"
-                onClick={async () => {
-                  const b = await api<TripBundle>(`/trips/${t.id}`);
-                  useBundle(b);
-                  setModal({ type: "edit", place: modal.place, day: 1 });
-                }}
+                disabled={working}
+                onClick={() => addPlaceToSavedTrip(t, modal.place!)}
               >
                 <Route size={23} />
-                <span>{t.title}</span>
+                <span>{t.title}{t.id === trip?.id && <small className="current-trip-label">当前行程</small>}</span>
                 <ChevronRight size={17} />
               </button>
             ))}
           </div>
           <button
             className="primary full"
+            disabled={working}
             onClick={() =>
               manualCreate(
                 modal.place!.city || modal.place!.name,
@@ -2256,7 +2309,7 @@ export default function App() {
             }
           >
             <Plus size={18} />
-            为这个景点新建行程
+            为这个地点新建行程 · 与 AI 规划
           </button>
         </Modal>
       )}

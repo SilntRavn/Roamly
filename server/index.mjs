@@ -21,6 +21,8 @@ import { featured, demoTrip, demoPlaces } from "./seed.mjs";
 import { searchPlaces, resolvePlace, auditTrip, ServiceError } from "./amap.mjs";
 import { amap, amapStaticMap } from "./amap-client.mjs";
 import { mapPlaces } from "./map-pois.mjs";
+import { ensureExploreFeed, readExploreFeed, readExploreNote, readFavoriteNotes, readCachedExploreNearby } from "./explore.mjs";
+import { exploreSearchArea } from "../shared/explore.mjs";
 import { getCachedPlaceContent } from "./place-content.mjs";
 import { placePreloader } from "./place-preload.mjs";
 import { planTrip } from "./planner.mjs";
@@ -131,6 +133,7 @@ app.get("/api/bootstrap", (req, res) => {
     user,
     featured,
     favorites,
+    favoriteNotes: readFavoriteNotes(req.userId),
     services: {
       aiConfigured: Boolean(config.aiKey),
       mapConfigured: Boolean(config.amapKeys.length),
@@ -201,8 +204,50 @@ app.get("/api/places/search", limit("search", 30), async (req, res) => {
 app.get("/api/map/places", limit("map-places", 60), async (req, res) => {
   const bounds = z.object({
     west: z.coerce.number(), south: z.coerce.number(), east: z.coerce.number(), north: z.coerce.number(),
+    category: z.enum(["scenery", "food", "stay", "fun"]).optional(),
   }).parse(req.query);
-  res.json(await mapPlaces(bounds));
+  res.json(await mapPlaces(bounds, bounds.category));
+});
+const exploreQuery = z.object({
+  west: z.coerce.number(), south: z.coerce.number(), east: z.coerce.number(), north: z.coerce.number(),
+  category: z.enum(["scenery", "food", "stay", "fun"]),
+  lng: z.coerce.number().min(-179).max(179).optional(), lat: z.coerce.number().min(-80).max(80).optional(),
+  radius: z.coerce.number().refine((n) => n === 5000 || n === 10000).optional(),
+}).refine((value) => [value.lng, value.lat, value.radius].every((n) => n === undefined) ||
+  [value.lng, value.lat, value.radius].every((n) => n !== undefined));
+function exploreBounds(input) {
+  const query = exploreQuery.parse(input);
+  return query.radius ? { ...exploreSearchArea({ lng: query.lng, lat: query.lat }, query.radius), category: query.category } : query;
+}
+app.get("/api/explore/nearby", limit("explore", 40), async (req, res) => {
+  const bounds = exploreBounds(req.query);
+  const cached = readCachedExploreNearby(bounds, bounds.category);
+  if (cached) return res.json({ ...cached, feed: ensureExploreFeed(bounds, bounds.category, cached.places) });
+  const places = await mapPlaces(bounds, bounds.category);
+  const feed = ensureExploreFeed(bounds, bounds.category, places);
+  res.json({ places, feed });
+});
+// Public-library synchronization reads SQLite only, never map or model services.
+app.get("/api/explore/stored", limit("explore-stored", 90), (req, res) => {
+  const bounds = exploreBounds(req.query);
+  res.json(readCachedExploreNearby(bounds, bounds.category));
+});
+app.get("/api/explore/feeds/:key", limit("explore-status", 90), (req, res) => res.json(readExploreFeed(req.params.key)));
+app.post("/api/explore/refresh", limit("explore-refresh", 4), async (req, res) => {
+  const bounds = exploreBounds(req.body);
+  const places = await mapPlaces(bounds, bounds.category);
+  res.json({ places, feed: ensureExploreFeed(bounds, bounds.category, places, { force: true }) });
+});
+app.get("/api/explore/notes/:id", (req, res) => res.json(readExploreNote(req.params.id)));
+app.get("/api/explore/favorites", (req, res) => res.json(readFavoriteNotes(req.userId)));
+app.put("/api/explore/favorites/:id", (req, res) => {
+  readExploreNote(req.params.id);
+  db.prepare("INSERT OR IGNORE INTO note_favorites VALUES(?,?,?)").run(req.userId, req.params.id, new Date().toISOString());
+  res.json({ favorite: true });
+});
+app.delete("/api/explore/favorites/:id", (req, res) => {
+  db.prepare("DELETE FROM note_favorites WHERE user_id=? AND note_id=?").run(req.userId, req.params.id);
+  res.json({ favorite: false });
 });
 app.get("/api/places/:id", async (req, res) => {
   const place = await resolvePlace(req.params.id);
@@ -304,6 +349,22 @@ app.get("/api/trips", (req, res) =>
   ),
 );
 app.get("/api/trips/:id", (req, res) => res.json(sendTrip(requireTrip(req))));
+app.post("/api/trips/:id/conversation", (req, res) => {
+  const trip = requireTrip(req);
+  if (activePlans.has(req.userId)) throw new ServiceError("请先等待当前 AI 规划完成", 409);
+  const { placeId } = z.object({ placeId: z.string().max(100).optional() }).parse(req.body);
+  const place = placeId ? tripPlaces(trip).find((p) => p.id === placeId) : null;
+  if (placeId && !place) throw new ServiceError("这个地点尚未加入行程", 400);
+  const previous = db.prepare("SELECT id,messages FROM conversations WHERE trip_id=? AND user_id=? ORDER BY rowid DESC LIMIT 1").get(trip.id, req.userId);
+  const id = previous?.id || randomUUID();
+  const messages = previous ? JSON.parse(previous.messages) : [];
+  if (place || !messages.length) messages.push({ role: "assistant", content: place
+    ? `已把「${place.name}」加入「${trip.title}」。想安排几天、什么时候去，或和哪些地方一起游玩？告诉我，我会把这一站一起安排进去。`
+    : `「${trip.title}」已准备好。告诉我出行时间、想去的地方和旅行偏好，我们一起安排这段旅程。` });
+  db.prepare("INSERT INTO conversations VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET messages=excluded.messages")
+    .run(id, req.userId, trip.id, JSON.stringify(messages));
+  res.json({ id, trip_id: trip.id, messages });
+});
 app.post("/api/trips", (req, res) => {
   const trip = TripSchema.parse({
     ...req.body,
