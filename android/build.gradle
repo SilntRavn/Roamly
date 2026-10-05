@@ -1,0 +1,39 @@
+plugins { id 'com.android.application' version '9.4.1' }
+
+android {
+    namespace 'com.roamly.app'
+    compileSdk { version = release(37) { minorApiLevel = 1 } }
+    defaultConfig {
+        applicationId 'com.roamly.app'
+        minSdk 26
+        targetSdk 35
+        versionCode 3
+        versionName '1.0.2'
+        ndk { abiFilters 'arm64-v8a' }
+        buildConfigField 'String', 'SERVER_URL', '"' + providers.gradleProperty('serverUrl').getOrElse('http://6.6.6.6:18080') + '"'
+    }
+    sourceSets {
+        main { manifest.srcFile 'AndroidManifest.xml'; java.srcDirs = ['src']; res.srcDirs = ['res']; assets.srcDirs = ['assets'] }
+        debug { assets.srcDirs = ['debug-assets'] }
+    }
+    buildFeatures { buildConfig true }
+    compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+    signingConfigs {
+        localRelease {
+            storeFile file('signing/roamly-release.p12')
+            storePassword file('signing/password.txt').text.trim()
+            keyAlias 'roamly'
+            keyPassword file('signing/password.txt').text.trim()
+        }
+    }
+    buildTypes {
+        release { signingConfig signingConfigs.localRelease; minifyEnabled false }
+        debug { signingConfig signingConfigs.localRelease }
+    }
+    packaging {
+        // Compress native libraries in the APK; Android extracts them during installation.
+        jniLibs { useLegacyPackaging = true }
+        resources { merges += ['META-INF/LICENSE*', 'META-INF/NOTICE*'] }
+    }
+}
+dependencies { implementation 'org.mozilla.geckoview:geckoview:157.0.20260924084938' }

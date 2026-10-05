@@ -1,0 +1,22 @@
+Roamly Android 1.0.2 third-party notices
+
+Mozilla GeckoView 157.0.20260924084938
+Copyright Mozilla contributors. Distributed under the Mozilla Public License 2.0.
+License: https://www.mozilla.org/MPL/2.0/
+Unmodified GeckoView library: https://maven.mozilla.org/maven2/org/mozilla/geckoview/geckoview/157.0.20260924084938/
+Corresponding Firefox 157 source: https://archive.mozilla.org/pub/firefox/releases/157.0/source/
+GeckoView Java source: https://maven.mozilla.org/maven2/org/mozilla/geckoview/geckoview/157.0.20260924084938/geckoview-157.0.20260924084938-sources.jar
+Gecko's bundled third-party notices are available in its packaged license resources.
+
+AndroidX and Android build/runtime libraries: Apache License 2.0
+https://www.apache.org/licenses/LICENSE-2.0
+https://android.googlesource.com/platform/frameworks/support/
+
+Kotlin standard library: Apache License 2.0
+https://github.com/JetBrains/kotlin
+
+SnakeYAML 2.2: Apache License 2.0
+https://bitbucket.org/snakeyaml/snakeyaml
+
+Google Play Services FIDO library is included as a GeckoView dependency.
+https://developers.google.com/android/guides/overview

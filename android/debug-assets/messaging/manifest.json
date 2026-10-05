@@ -1,0 +1,30 @@
+{
+  "manifest_version": 2,
+  "name": "Roamly native bridge QA",
+  "version": "1.0.1",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "roamly-native@roamly.local"
+    }
+  },
+  "permissions": [
+    "nativeMessaging",
+    "nativeMessagingFromContent",
+    "geckoViewAddons"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "http://6.6.6.6/*"
+      ],
+      "js": [
+        "messaging.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ],
+  "web_accessible_resources": [
+    "probe.js"
+  ]
+}

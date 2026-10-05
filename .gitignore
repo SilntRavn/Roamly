@@ -1,0 +1,49 @@
+# Dependencies and generated output
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+*.log
+*.b64
+artifacts/
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+key.txt
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.pem
+*.key
+password.txt
+
+# User data, exports and database backups
+data/
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.db
+*.db-*
+*.roamly
+
+# Android caches, signing material and release binaries
+android/build/
+android/signing/
+android/.gradle/
+android/local.properties
+android/vendor/
+*.apk
+*.aab
+*.aar
+
+# Machine-specific state and unrelated local experiments
+deploy/run/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+/head.png
+/pelican-bike.html
